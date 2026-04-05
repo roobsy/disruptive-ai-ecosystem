@@ -1,0 +1,444 @@
+"""
+Research Agent — Autonomous Knowledge Acquisition (v2)
+========================================================
+Uses the full Data Acquisition Architecture (all 4 tiers)
+via the Source Router. Generates queries, discovers papers
+and patents across all sources, ranks by relevance, and
+extracts into the Knowledge Base.
+"""
+
+import time
+import json
+import re
+from typing import Optional
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+
+from core.model_router import AgentRequest, AgentResponse, execute
+from core.kb import (
+    get_venture_id, check_already_extracted, get_stats,
+    store_node, store_provenance, log_extraction,
+)
+from extraction.source_router import search_all, lookup_known_patents
+from extraction.source_interface import SourceResult
+from extraction.sources.arxiv import download_pdf, get_paper_metadata
+from extraction.sources.web_scraper import download_file
+from core.epistemic_filter import extract_from_pdf, extract_from_text
+
+console = Console()
+
+
+# ── Query Generation ──────────────────────────────────────
+QUERY_PROMPT = """You are the Research Agent. Given a knowledge gap, generate search queries
+to find papers AND patents that fill it.
+
+Generate 4-8 queries covering:
+- Academic paper searches (for Semantic Scholar, OpenAlex, PubMed)
+- Patent searches (for USPTO PatentsView)
+- Specific author or assignee searches if relevant
+
+Respond with ONLY a JSON array (no markdown):
+[
+  {"query": "vision correcting display PSF deconvolution", "type": "academic", "priority": "high", "year_range": "2014-2026", "min_citations": 5},
+  {"query": "display vision correction aberration", "type": "patent", "priority": "high", "year_range": "2010-2026"},
+  {"query": "Zernike polynomial refractive error population statistics", "type": "academic", "priority": "high"}
+]
+
+type must be "academic" or "patent" or "both"."""
+
+
+def generate_queries(gap_description: str) -> list[dict]:
+    request = AgentRequest(
+        role="research_agent", complexity="standard",
+        system_prompt=QUERY_PROMPT,
+        input_text=f"Generate search queries for this gap:\n\n{gap_description}",
+        output_format="json", max_tokens=2048, temperature=0.3,
+    )
+    response = execute(request)
+    if response.parsed and isinstance(response.parsed, list):
+        return response.parsed
+    return []
+
+
+# ── Discovery ─────────────────────────────────────────────
+def discover(queries: list[dict], max_per_query: int = 8) -> list[SourceResult]:
+    """Run all queries through the source router."""
+    all_results = []
+
+    for q in queries:
+        query_text = q.get("query", "")
+        query_type = q.get("type", "both")
+        year_range = q.get("year_range")
+        min_citations = q.get("min_citations", 0)
+
+        console.print(f"\n  [cyan]Query:[/cyan] \"{query_text}\" [dim]({query_type})[/dim]")
+
+        results = search_all(
+            query=query_text,
+            include_academic=(query_type in ("academic", "both")),
+            include_patents=(query_type in ("patent", "both")),
+            limit_per_source=max_per_query,
+            year_range=year_range,
+            min_citations=min_citations,
+        )
+        all_results.extend(results)
+        time.sleep(0.5)
+
+    # Deduplicate across queries
+    seen = set()
+    unique = []
+    for r in all_results:
+        key = r.doi or r.arxiv_id or r.patent_number or r.title[:50].lower()
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(r)
+
+    return unique
+
+
+# ── Ranking ───────────────────────────────────────────────
+RANK_PROMPT = """You are the Research Agent. Select the most valuable papers and patents to extract.
+
+CRITERIA (ordered):
+1. DIRECT RELEVANCE to the knowledge gap
+2. QUALITY (citations, venue, author authority)
+3. OPEN ACCESS (papers with PDFs can be extracted immediately)
+4. RECENCY (newer preferred — they cite older work)
+5. UNIQUENESS (avoid redundant coverage)
+
+For patents: prioritize granted patents over applications, and those with detailed claims.
+
+Respond with ONLY a JSON array of selections (max 10):
+[
+  {"title": "...", "arxiv_id": "2501.01450", "doi": "", "patent_number": "", "source_type": "academic_paper", "abstract": "first 200 chars of abstract...", "authors": ["Author One", "Author Two"], "rationale": "...", "priority": "high"},
+  {"title": "...", "arxiv_id": "", "doi": "10.1234/example", "patent_number": "", "source_type": "academic_paper", "abstract": "first 200 chars...", "authors": ["Author"], "rationale": "...", "priority": "high"}
+]
+
+Include whichever ID field is available (arxiv_id, doi, or patent_number).
+IMPORTANT: Always include the abstract and authors from the source data — needed for extraction."""
+
+
+def rank_and_select(results: list[SourceResult], gap: str, max_select: int = 8) -> list[dict]:
+    summaries = []
+    for r in results[:25]:
+        summaries.append({
+            "title": r.title[:80], "source_type": r.source_type,
+            "arxiv_id": r.arxiv_id, "doi": r.doi,
+            "patent_number": r.patent_number,
+            "year": r.year, "citations": r.citation_count,
+            "has_pdf": r.has_open_access,
+            "abstract": r.abstract[:150],
+            "source_api": r.source_api,
+        })
+
+    request = AgentRequest(
+        role="research_agent", complexity="standard",
+        system_prompt=RANK_PROMPT,
+        input_text=f"GAP:\n{gap}\n\nAVAILABLE ({len(summaries)} items):\n{json.dumps(summaries, indent=1)}",
+        output_format="json", max_tokens=4096, temperature=0.1,
+    )
+    response = execute(request)
+
+    # If model_router parsed it successfully, use that
+    if response.parsed and isinstance(response.parsed, list):
+        return response.parsed[:max_select]
+
+    # Otherwise, try to extract JSON from the raw response
+    if response.content:
+        content = response.content.strip()
+
+        # Strategy 1: Find JSON array in the response
+        bracket_match = re.search(r'\[.*\]', content, re.DOTALL)
+        if bracket_match:
+            try:
+                parsed = json.loads(bracket_match.group(0))
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    console.print(f"  [dim]Recovered {len(parsed)} selections from raw response[/dim]")
+                    return parsed[:max_select]
+            except json.JSONDecodeError:
+                pass
+
+        # Strategy 2: Try removing markdown fences more aggressively
+        for fence in ['```json', '```JSON', '```']:
+            if fence in content:
+                try:
+                    json_str = content.split(fence, 1)[1]
+                    json_str = json_str.split('```', 1)[0].strip()
+                    parsed = json.loads(json_str)
+                    if isinstance(parsed, list):
+                        console.print(f"  [dim]Recovered {len(parsed)} selections from fenced response[/dim]")
+                        return parsed[:max_select]
+                except (json.JSONDecodeError, IndexError):
+                    pass
+
+        # Log the failure for debugging
+        console.print(f"  [yellow]Ranking response could not be parsed as JSON[/yellow]")
+        console.print(f"  [dim]Raw response (first 300 chars): {content[:300]}[/dim]")
+
+    return []
+
+
+# ── Extraction ────────────────────────────────────────────
+def extract_selected(selected: list[dict], gap_context: str, venture_id: str) -> dict:
+    """Download and extract selected papers/patents into the KB."""
+    stats = {"papers": 0, "patents": 0, "failed": 0, "skipped": 0, "cost": 0.0}
+
+    for i, item in enumerate(selected, 1):
+        title = item.get("title", "Unknown")[:80
+        ]
+        source_type = item.get("source_type", "academic_paper")
+        arxiv_id = item.get("arxiv_id", "")
+        doi = item.get("doi", "")
+        pat_num = item.get("patent_number", "")
+
+        console.print(f"\n  [cyan]{i}/{len(selected)}:[/cyan] {title}")
+        console.print(f"  [dim]Type: {source_type} | ArXiv: {arxiv_id} | DOI: {doi} | Patent: {pat_num}[/dim]")
+
+        # Determine source URL for dedup check
+        if arxiv_id:
+            source_url = f"https://arxiv.org/abs/{arxiv_id}"
+        elif pat_num:
+            source_url = f"https://patents.google.com/patent/{pat_num}"
+        elif doi:
+            source_url = f"https://doi.org/{doi}"
+        else:
+            source_url = title[:100]
+
+        if check_already_extracted(venture_id, source_url):
+            console.print(f"  [dim]Already extracted — skipping[/dim]")
+            stats["skipped"] += 1
+            continue
+
+        # ── Extract academic papers ──
+        if source_type == "academic_paper" and arxiv_id:
+            pdf_path = download_pdf(arxiv_id)
+            if not pdf_path:
+                console.print(f"  [red]PDF download failed[/red]")
+                stats["failed"] += 1
+                continue
+
+            console.print(f"  [blue]Running Epistemic Filter...[/blue]")
+            log_extraction(venture_id, source_url, status="processing")
+            response = extract_from_pdf(str(pdf_path), extra_context=f"Extracted to fill gap: {gap_context}")
+
+            if not response.success or not response.parsed:
+                console.print(f"  [red]Extraction failed[/red]")
+                log_extraction(venture_id, source_url, status="failed", error_message=response.error or "parse_error")
+                stats["failed"] += 1
+                continue
+
+            metadata = get_paper_metadata(arxiv_id)
+            nodes_stored = _store_nodes(response, venture_id, source_url, "academic_paper",
+                                       metadata.get("title", title), metadata.get("authors", []),
+                                       arxiv_id, metadata.get("year"), "tier1_academic")
+            stats["papers"] += 1
+            stats["cost"] += response.cost_estimate
+            console.print(f"  [green]✓ {nodes_stored} nodes (${response.cost_estimate:.4f})[/green]")
+
+        # ── Extract DOI-based papers (no ArXiv ID) via Unpaywall ──
+        elif source_type == "academic_paper" and doi and not arxiv_id:
+            console.print(f"  [blue]Checking Unpaywall for open-access PDF...[/blue]")
+            from extraction.sources.unpaywall import find_open_access
+            from extraction.sources.web_scraper import download_file
+
+            oa_info = find_open_access(doi)
+            pdf_path = None
+
+            if oa_info and oa_info.get("pdf_url"):
+                pdf_url = oa_info["pdf_url"]
+                console.print(f"  [green]Found OA PDF: {pdf_url[:60]}...[/green]")
+                pdf_path = download_file(pdf_url, output_dir="data/papers")
+
+            if pdf_path:
+                console.print(f"  [blue]Running Epistemic Filter on PDF...[/blue]")
+                log_extraction(venture_id, source_url, status="processing")
+                response = extract_from_pdf(str(pdf_path), extra_context=f"Extracted to fill gap: {gap_context}")
+
+                if response.success and response.parsed:
+                    nodes_stored = _store_nodes(response, venture_id, source_url, "academic_paper",
+                                               title, item.get("authors", []),
+                                               doi, oa_info.get("year"), "tier1_academic")
+                    stats["papers"] += 1
+                    stats["cost"] += response.cost_estimate
+                    console.print(f"  [green]✓ {nodes_stored} nodes (${response.cost_estimate:.4f})[/green]")
+                else:
+                    console.print(f"  [red]PDF extraction failed, trying abstract...[/red]")
+                    pdf_path = None  # Fall through to abstract extraction
+
+            if not pdf_path:
+                # No PDF available — extract from abstract text (limited but better than nothing)
+                abstract = item.get("abstract", "")
+                if not abstract:
+                    # Try to find abstract from the original search results
+                    console.print(f"  [yellow]No PDF and no abstract — skipping[/yellow]")
+                    stats["skipped"] += 1
+                    continue
+
+                console.print(f"  [blue]No PDF available — extracting from abstract text...[/blue]")
+                log_extraction(venture_id, source_url, status="processing")
+                paper_text = f"Title: {title}\nDOI: {doi}\n\nAbstract: {abstract}"
+                response = extract_from_text(paper_text, source_description=f"Paper: {title}")
+
+                if response.success and response.parsed:
+                    nodes_stored = _store_nodes(response, venture_id, source_url, "academic_paper",
+                                               title, item.get("authors", []),
+                                               doi, None, "tier1_academic")
+                    stats["papers"] += 1
+                    stats["cost"] += response.cost_estimate
+                    console.print(f"  [green]✓ {nodes_stored} nodes from abstract (${response.cost_estimate:.4f})[/green]")
+                else:
+                    stats["failed"] += 1
+                    log_extraction(venture_id, source_url, status="failed")
+
+        # ── Extract patents via Google Patents scraping ──
+        elif source_type == "patent" and pat_num:
+            result = None
+            try:
+                from extraction.sources.google_patents import lookup_patent
+                result = lookup_patent(pat_num)
+            except Exception as e:
+                console.print(f"  [yellow]Patent lookup error: {e}[/yellow]")
+
+            if result and result.abstract:
+                console.print(f"  [blue]Running Epistemic Filter on patent text...[/blue]")
+                log_extraction(venture_id, source_url, source_type="patent", status="processing")
+
+                patent_text = f"Patent: {result.title}\n\nAbstract: {result.abstract}"
+                response = extract_from_text(patent_text, source_description=f"Patent {pat_num}")
+
+                if response.success and response.parsed:
+                    nodes_stored = _store_nodes(response, venture_id, source_url, "patent",
+                                               result.title, result.authors, pat_num,
+                                               result.year, "tier2_patent")
+                    stats["patents"] += 1
+                    stats["cost"] += response.cost_estimate
+                    console.print(f"  [green]✓ {nodes_stored} nodes (${response.cost_estimate:.4f})[/green]")
+                else:
+                    stats["failed"] += 1
+                    log_extraction(venture_id, source_url, status="failed")
+            else:
+                console.print(f"  [yellow]Could not fetch patent content[/yellow]")
+                stats["failed"] += 1
+
+        else:
+            console.print(f"  [yellow]No extractable ID — skipping[/yellow]")
+            stats["skipped"] += 1
+
+        time.sleep(2)
+
+    return stats
+
+
+def _store_nodes(response, venture_id, source_url, source_type, title, authors, source_id, year, cred_tier) -> int:
+    """Store extracted nodes and provenance. Returns count stored."""
+    nodes_data = response.parsed.get("nodes", [])
+    stored = 0
+    for nd in nodes_data:
+        try:
+            node = store_node(
+                venture_id=venture_id,
+                epistemic_label=nd.get("epistemic_label", "cognitive_framework"),
+                content=nd.get("content", ""), summary=nd.get("summary"),
+                confidence=nd.get("confidence", 50), decay_rate=nd.get("decay_rate", 365),
+                domain=nd.get("domain"), tags=nd.get("tags", []),
+                created_by="research_agent",
+            )
+            if node:
+                store_provenance(
+                    node_id=node["id"], source_type=source_type,
+                    source_url=source_url, source_title=title,
+                    source_authors=authors, source_doi=source_id,
+                    source_year=year, credibility_tier=cred_tier,
+                    extraction_agent="research_agent",
+                )
+                stored += 1
+        except Exception as e:
+            console.print(f"    [yellow]Node error: {e}[/yellow]")
+    log_extraction(venture_id, source_url, source_type=source_type, status="completed",
+                  nodes_created=stored, cost_input_tokens=response.input_tokens,
+                  cost_output_tokens=response.output_tokens, processing_time_ms=response.duration_ms)
+    return stored
+
+
+# ── Main Research Cycle ───────────────────────────────────
+def research_gap(gap_description: str, max_papers: int = 6) -> dict:
+    """Full autonomous research cycle for a knowledge gap."""
+    venture_id = get_venture_id()
+
+    console.print(Panel(f"[bold]Autonomous Research Cycle[/bold]\n\nGap: {gap_description[:300]}",
+                       style="cyan", title="Research Agent v2"))
+
+    # Step 1: Generate queries
+    console.print("\n[bold]Step 1: Generating search queries...[/bold]")
+    queries = generate_queries(gap_description)
+    if not queries:
+        console.print("  [red]Failed to generate queries[/red]")
+        return {"error": "query_gen_failed"}
+    for q in queries:
+        console.print(f"  [{q.get('priority','?')}] [{q.get('type','?')}] \"{q.get('query','')}\"")
+
+    # Step 2: Discover across all sources
+    console.print(f"\n[bold]Step 2: Discovering across all sources...[/bold]")
+    results = discover(queries, max_per_query=8)
+    console.print(f"\n  [bold]Total unique results: {len(results)}[/bold]")
+
+    if not results:
+        return {"error": "no_results"}
+
+    # Show summary
+    academic = [r for r in results if r.source_type == "academic_paper"]
+    patents = [r for r in results if r.source_type == "patent"]
+    console.print(f"  Academic papers: {len(academic)} | Patents: {len(patents)}")
+
+    # Step 3: Rank and select
+    console.print(f"\n[bold]Step 3: Ranking and selecting top results...[/bold]")
+    selected = rank_and_select(results, gap_description, max_select=max_papers)
+    if not selected:
+        return {"error": "selection_failed"}
+    console.print(f"  Selected {len(selected)} items:")
+    for s in selected:
+        console.print(f"    • [{s.get('source_type','?')[:6]}] {s.get('title','?')[:70]}")
+
+    # Step 4: Extract
+    console.print(f"\n[bold]Step 4: Extracting...[/bold]")
+    stats = extract_selected(selected, gap_description, venture_id)
+
+    console.print(Panel(
+        f"[bold]Research Cycle Complete[/bold]\n\n"
+        f"Papers extracted: {stats.get('papers', 0)}\n"
+        f"Patents extracted: {stats.get('patents', 0)}\n"
+        f"Failed: {stats.get('failed', 0)}\n"
+        f"Skipped: {stats.get('skipped', 0)}\n"
+        f"Cost: ${stats.get('cost', 0):.4f}",
+        style="green" if (stats.get("papers", 0) + stats.get("patents", 0)) > 0 else "yellow",
+    ))
+    return stats
+
+
+def research_multiple_gaps(gaps: list[str], max_papers_per_gap: int = 5):
+    """Research multiple gaps sequentially."""
+    console.print(Panel(
+        f"[bold]Multi-Gap Research Campaign[/bold]\n"
+        f"Gaps: {len(gaps)} | Max papers/gap: {max_papers_per_gap}\n"
+        f"Est. cost: ${len(gaps) * max_papers_per_gap * 0.15:.2f}-${len(gaps) * max_papers_per_gap * 0.30:.2f}",
+        style="cyan",
+    ))
+    proceed = console.input("\n[bold]Proceed? (y/n): [/bold]").strip().lower()
+    if proceed != "y":
+        return
+
+    for i, gap in enumerate(gaps, 1):
+        console.print(f"\n{'='*70}\n[bold cyan]Gap {i}/{len(gaps)}[/bold cyan]\n{'='*70}")
+        research_gap(gap, max_papers=max_papers_per_gap)
+        if i < len(gaps):
+            time.sleep(3)
+
+    kb_stats = get_stats(get_venture_id())
+    console.print(Panel(
+        f"[bold]Campaign Complete — Updated Spine[/bold]\n"
+        f"Total nodes: {kb_stats.get('total', 0)}\n"
+        f"By label: {kb_stats.get('by_label', {})}\n"
+        f"By domain: {kb_stats.get('by_domain', {})}",
+        style="green",
+    ))

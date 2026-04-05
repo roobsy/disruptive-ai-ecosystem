@@ -1,0 +1,27 @@
+# Environment
+.env
+.venv/
+venv/
+
+data/papers/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Data (downloaded papers — don't commit to Git)
+data/
+
+# IDE
+.cursor/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml

@@ -42,6 +42,36 @@ def tool_kb_query(args: dict) -> dict:
     }
 
 
+def _format_agent_response(resp) -> dict:
+    """Convert a core.model_router.AgentResponse into a tool-friendly dict."""
+    return {
+        "success": resp.success,
+        "content": resp.content if resp.success else None,
+        "error": resp.error,
+        "model": resp.model,
+        "duration_ms": resp.duration_ms,
+        "duration_seconds": round(resp.duration_ms / 1000, 1),
+        "cost_usd": round(resp.cost_estimate, 4),
+        "input_tokens": resp.input_tokens,
+        "output_tokens": resp.output_tokens,
+    }
+
+
+def tool_master_brain_review(_args: dict) -> dict:
+    from agents.master_brain import MasterBrain
+    mb = MasterBrain()
+    return _format_agent_response(mb.strategic_review())
+
+
+def tool_master_brain_assess(args: dict) -> dict:
+    idea = (args.get("idea") or "").strip()
+    if not idea:
+        return {"success": False, "error": "Missing 'idea' argument."}
+    from agents.master_brain import MasterBrain
+    mb = MasterBrain()
+    return _format_agent_response(mb.assess_idea(idea))
+
+
 # ── Schemas exposed to Claude ─────────────────────────────
 TOOL_SCHEMAS = [
     {
@@ -49,7 +79,7 @@ TOOL_SCHEMAS = [
         "description": (
             "Return summary statistics for the Knowledge Base: total node count, "
             "breakdown by epistemic label, lifecycle state, domain, and average confidence. "
-            "Use this when the user asks about the overall state of the KB."
+            "Use this when the user asks about the overall state of the KB. Fast and free."
         ),
         "input_schema": {
             "type": "object",
@@ -62,7 +92,8 @@ TOOL_SCHEMAS = [
         "description": (
             "Query knowledge nodes with optional filters. Returns up to `limit` nodes "
             "ordered by confidence (descending). Use when the user wants to inspect "
-            "specific knowledge — e.g. 'show me high-confidence ophthalmology facts'."
+            "specific knowledge — e.g. 'show me high-confidence ophthalmology facts'. "
+            "Fast and free."
         ),
         "input_schema": {
             "type": "object",
@@ -98,12 +129,56 @@ TOOL_SCHEMAS = [
             "required": [],
         },
     },
+    {
+        "name": "master_brain_review",
+        "description": (
+            "Run a comprehensive Master Brain strategic review using Opus. Analyzes "
+            "the entire KB and returns: per-domain coverage assessment, constraint "
+            "map of established physics limits, 3–5 ranked solution hypotheses with "
+            "feasibility/patent/competitive analysis, prioritized critical gaps, and "
+            "recommended next actions. EXPENSIVE: ~30–90 seconds, ~$0.40–0.60 per "
+            "call. Use ONLY when the user explicitly asks for a strategic review or "
+            "a comprehensive assessment of the venture. Do NOT call this casually "
+            "or to answer narrow questions — use kb_stats and kb_query for those."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "master_brain_assess",
+        "description": (
+            "Evaluate a specific idea, hypothesis, or solution path against the full "
+            "KB using Opus. Returns a structured assessment: thesis (steelman), red "
+            "team attack, feasibility, patent risk, verdict, and the single most "
+            "important next experiment. EXPENSIVE: ~30–60 seconds, ~$0.30–0.50 per "
+            "call. Use when the user proposes a concrete idea or wants something "
+            "stress-tested. Do NOT call to answer general questions about the KB."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "idea": {
+                    "type": "string",
+                    "description": (
+                        "The idea, hypothesis, or solution path to assess. "
+                        "1–3 paragraphs of concrete description."
+                    ),
+                }
+            },
+            "required": ["idea"],
+        },
+    },
 ]
 
 
 TOOL_HANDLERS: dict[str, Callable[[dict], dict]] = {
     "kb_stats": tool_kb_stats,
     "kb_query": tool_kb_query,
+    "master_brain_review": tool_master_brain_review,
+    "master_brain_assess": tool_master_brain_assess,
 }
 
 

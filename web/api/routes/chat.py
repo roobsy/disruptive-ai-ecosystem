@@ -12,6 +12,7 @@ result to the message history, and ask Claude again — until it stops with
 end_turn.
 """
 
+import asyncio
 import json
 import os
 import sys
@@ -33,10 +34,20 @@ venture is "Vision Correction Display" — its Prime Directive is to identify an
 validate a commercially viable, patent-clear method for correcting refractive
 vision errors through display technology.
 
-You have tools to query the Knowledge Base (KB). Prefer calling tools to ground
-your answers in real data rather than speculating. When you display node lists,
-use compact markdown tables. When you give numbers, attribute them to the tool
-that returned them.
+TOOL USE POLICY:
+- kb_stats and kb_query are FAST and FREE — use them liberally to ground answers
+  in real KB data instead of speculating.
+- master_brain_review is EXPENSIVE (~30–90s, ~$0.50). Call it ONLY when the user
+  explicitly asks for a strategic review, comprehensive assessment, or "what's
+  the state of the venture." Never call it just to answer a narrow question.
+- master_brain_assess is EXPENSIVE (~30–60s, ~$0.40). Call it when the user
+  proposes a concrete idea/hypothesis/solution path and wants it stress-tested.
+- Before calling an expensive tool, briefly tell the user what you're about to
+  do and why. After it returns, summarize the key findings — don't paste the
+  full text back, the user can expand the tool card to read it.
+
+When you display node lists, use compact markdown tables. When you give numbers,
+attribute them to the tool that returned them.
 
 Be concise. The user can see a Dashboard alongside this chat — don't repeat what
 the dashboard already shows; add interpretation.
@@ -155,7 +166,9 @@ async def chat(req: ChatRequest):
                     "tool_use",
                     {"id": tu["id"], "name": tu["name"], "input": tu["input"]},
                 )
-                output = run_tool(tu["name"], tu["input"] or {})
+                # Run the tool off the event loop so SSE keepalive keeps flowing
+                # during long Opus calls (Master Brain reviews can take 30–90s).
+                output = await asyncio.to_thread(run_tool, tu["name"], tu["input"] or {})
                 yield _sse(
                     "tool_result",
                     {"id": tu["id"], "name": tu["name"], "output": output},
@@ -164,7 +177,7 @@ async def chat(req: ChatRequest):
                     {
                         "type": "tool_result",
                         "tool_use_id": tu["id"],
-                        "content": json.dumps(output)[:6000],
+                        "content": json.dumps(output)[:30000],
                     }
                 )
 

@@ -1,7 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Send, Sparkles, Wrench, ChevronDown, ChevronRight } from "lucide-react";
+import {
+  Send,
+  Sparkles,
+  Wrench,
+  ChevronDown,
+  ChevronRight,
+  AlertCircle,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -23,7 +30,8 @@ type Message = {
 const SUGGESTIONS = [
   "What's the current state of the KB?",
   "Show me the top 5 ophthalmology nodes.",
-  "Which lifecycle states are most common?",
+  "Run a Master Brain strategic review.",
+  "Assess the idea: hybrid PSF deconvolution + tunable lens layer.",
 ];
 
 export function ChatPanel() {
@@ -290,11 +298,35 @@ function ChatBubble({ message }: { message: Message }) {
   );
 }
 
+const EXPENSIVE_TOOLS = new Set(["master_brain_review", "master_brain_assess"]);
+
 function ToolCard({ tool }: { tool: ToolCall }) {
-  const [open, setOpen] = useState(false);
-  const status = tool.output === undefined ? "Running" : "Complete";
+  const isExpensive = EXPENSIVE_TOOLS.has(tool.name);
+  const running = tool.output === undefined;
+  // Auto-expand expensive tools while running so the user sees activity.
+  const [open, setOpen] = useState(isExpensive && running);
+  const out = tool.output as any;
+  const failed = out && (out.success === false || out.error);
+  const hasProse = out && typeof out.content === "string" && out.content.length > 0;
+
+  const status = running ? (isExpensive ? "Thinking" : "Running") : failed ? "Failed" : "Complete";
+  const statusClass = running
+    ? "text-amber-600"
+    : failed
+      ? "text-rose-600"
+      : "text-emerald-600";
+
   return (
-    <div className="rounded-lg border border-ink-line bg-bg-elevated">
+    <div
+      className={cn(
+        "rounded-lg border bg-bg-elevated transition-colors",
+        failed
+          ? "border-rose-200"
+          : isExpensive
+            ? "border-accent-ring/40"
+            : "border-ink-line"
+      )}
+    >
       <button
         onClick={() => setOpen(!open)}
         className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left"
@@ -304,15 +336,17 @@ function ToolCard({ tool }: { tool: ToolCall }) {
         ) : (
           <ChevronRight className="h-3 w-3 text-ink-subtle" />
         )}
-        <Wrench className="h-3 w-3 text-accent" />
+        {isExpensive ? (
+          <Sparkles className={cn("h-3 w-3", running ? "text-accent animate-pulse" : "text-accent")} />
+        ) : failed ? (
+          <AlertCircle className="h-3 w-3 text-rose-600" />
+        ) : (
+          <Wrench className="h-3 w-3 text-accent" />
+        )}
         <span className="text-[11px] font-mono text-ink">{tool.name}</span>
-        <span
-          className={cn(
-            "ml-auto text-[10px] uppercase tracking-wider",
-            tool.output === undefined ? "text-amber-600" : "text-emerald-600"
-          )}
-        >
+        <span className={cn("ml-auto text-[10px] uppercase tracking-wider", statusClass)}>
           {status}
+          {running && <span className="ml-1 inline-block animate-pulse">·</span>}
         </span>
       </button>
       {open && (
@@ -327,7 +361,34 @@ function ToolCard({ tool }: { tool: ToolCall }) {
               </pre>
             </div>
           )}
-          {tool.output !== undefined && (
+
+          {running && (
+            <div className="text-[11px] text-ink-muted italic px-0.5">
+              {isExpensive
+                ? "Calling Opus across the full Knowledge Base — this can take 30–90 seconds."
+                : "Running…"}
+            </div>
+          )}
+
+          {!running && failed && (
+            <div className="text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded p-2">
+              {out?.error || "Tool returned an error."}
+            </div>
+          )}
+
+          {!running && !failed && hasProse && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-ink-subtle">
+                Result
+              </div>
+              <div className="mt-0.5 text-[12px] leading-relaxed bg-bg-subtle rounded p-2.5 max-h-72 overflow-y-auto whitespace-pre-wrap text-ink">
+                {out.content}
+              </div>
+              <ToolMeta out={out} />
+            </div>
+          )}
+
+          {!running && !failed && !hasProse && (
             <div>
               <div className="text-[10px] uppercase tracking-wider text-ink-subtle">
                 Output
@@ -339,6 +400,24 @@ function ToolCard({ tool }: { tool: ToolCall }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ToolMeta({ out }: { out: any }) {
+  const bits: string[] = [];
+  if (out.model) bits.push(out.model);
+  if (out.duration_seconds != null) bits.push(`${out.duration_seconds}s`);
+  if (out.cost_usd != null) bits.push(`$${out.cost_usd.toFixed(3)}`);
+  if (out.input_tokens != null && out.output_tokens != null) {
+    bits.push(`${out.input_tokens}→${out.output_tokens} tok`);
+  }
+  if (!bits.length) return null;
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-ink-subtle font-mono">
+      {bits.map((b, i) => (
+        <span key={i}>{b}</span>
+      ))}
     </div>
   );
 }

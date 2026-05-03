@@ -139,16 +139,16 @@ def search_academic(
                 year_range=year_range,
                 min_citations=min_citations,
             )
-            console.print(f" → {len(results)} results")
+            console.print(f" -> {len(results)} results")
             all_results.extend(results)
         except Exception as e:
-            console.print(f" → [red]Error: {e}[/red]")
+            console.print(f" -> [red]Error: {e}[/red]")
 
         time.sleep(0.3)  # Polite delay between sources
 
     # Deduplicate
     unique = _deduplicate(all_results)
-    console.print(f"  [dim]{len(all_results)} total → {len(unique)} unique after dedup[/dim]")
+    console.print(f"  [dim]{len(all_results)} total -> {len(unique)} unique after dedup[/dim]")
 
     # Enrich with open access PDFs
     if enrich_oa:
@@ -192,10 +192,10 @@ def search_patents(
 
         try:
             results = mod.search(query=query, limit=limit_per_source, year_range=year_range)
-            console.print(f" → {len(results)} results")
+            console.print(f" -> {len(results)} results")
             all_results.extend(results)
         except Exception as e:
-            console.print(f" → [red]Error: {e}[/red]")
+            console.print(f" -> [red]Error: {e}[/red]")
 
         time.sleep(0.3)
 
@@ -205,14 +205,14 @@ def search_patents(
             console.print(f"  [blue]PatentsView assignee: {assignee}...[/blue]", end="")
             try:
                 results = patents_view.search_by_assignee(assignee, limit=limit_per_source)
-                console.print(f" → {len(results)} results")
+                console.print(f" -> {len(results)} results")
                 all_results.extend(results)
             except Exception as e:
-                console.print(f" → [red]Error: {e}[/red]")
+                console.print(f" -> [red]Error: {e}[/red]")
             time.sleep(0.3)
 
     unique = _deduplicate(all_results)
-    console.print(f"  [dim]{len(all_results)} total → {len(unique)} unique after dedup[/dim]")
+    console.print(f"  [dim]{len(all_results)} total -> {len(unique)} unique after dedup[/dim]")
 
     return unique
 
@@ -226,9 +226,9 @@ def lookup_known_patents(patent_numbers: list[str]) -> list[SourceResult]:
         result = google_patents.lookup_patent(pat_num)
         if result:
             results.append(result)
-            console.print(f" → {result.title[:60]}")
+            console.print(f" -> {result.title[:60]}")
         else:
-            console.print(f" → [yellow]Not found[/yellow]")
+            console.print(f" -> [yellow]Not found[/yellow]")
         time.sleep(1)
     return results
 
@@ -266,10 +266,10 @@ def search_tier3(
                 year_range=year_range,
                 min_citations=min_citations,
             )
-            console.print(f" → {len(results)} results")
+            console.print(f" -> {len(results)} results")
             all_results.extend(results)
         except Exception as e:
-            console.print(f" → [red]Error: {e}[/red]")
+            console.print(f" -> [red]Error: {e}[/red]")
 
         time.sleep(0.5)
 

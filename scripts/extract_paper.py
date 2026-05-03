@@ -34,7 +34,7 @@ console = Console()
 
 
 def extract_paper(paper_id: str, context: str = "", force: bool = False):
-    """Full pipeline: download → label → store."""
+    """Full pipeline: download -> label -> store."""
 
     console.print(Panel(
         f"[bold]Extracting:[/bold] {paper_id}",
@@ -46,9 +46,9 @@ def extract_paper(paper_id: str, context: str = "", force: bool = False):
     with console.status("[bold blue]Connecting to Knowledge Base..."):
         try:
             venture_id = get_venture_id()
-            console.print(f"  [green]\u2713[/green] Connected to venture")
+            console.print(f"  [green]OK[/green] Connected to venture")
         except Exception as e:
-            console.print(f"  [red]\u2717 Failed:[/red] {e}")
+            console.print(f"  [red]FAIL Failed:[/red] {e}")
             console.print("\n  [yellow]Have you run setup_supabase.sql?[/yellow]")
             return
 
@@ -76,11 +76,11 @@ def extract_paper(paper_id: str, context: str = "", force: bool = False):
     with console.status("[bold blue]Downloading PDF..."):
         pdf_path = download_pdf(paper_id)
         if not pdf_path:
-            console.print("  [red]\u2717 Download failed[/red]")
+            console.print("  [red]FAIL Download failed[/red]")
             log_extraction(venture_id, source_url, status="failed",
                          error_message="PDF download failed")
             return
-        console.print(f"  [green]\u2713[/green] PDF downloaded: {pdf_path}")
+        console.print(f"  [green]OK[/green] PDF downloaded: {pdf_path}")
 
     # ── Step 4: Run Epistemic Filter ──────────────────────
     console.print()
@@ -94,21 +94,21 @@ def extract_paper(paper_id: str, context: str = "", force: bool = False):
         progress.update(task, completed=True)
 
     if not response.success:
-        console.print(f"\n  [red]\u2717 Extraction failed:[/red] {response.error}")
+        console.print(f"\n  [red]FAIL Extraction failed:[/red] {response.error}")
         log_extraction(venture_id, source_url, status="failed",
                      error_message=response.error,
                      cost_input_tokens=response.input_tokens,
                      cost_output_tokens=response.output_tokens)
         return
 
-    console.print(f"  [green]\u2713[/green] Epistemic analysis complete")
+    console.print(f"  [green]OK[/green] Epistemic analysis complete")
     console.print(f"  [dim]Model: {response.model} | "
                   f"Tokens: {response.input_tokens:,} in / {response.output_tokens:,} out | "
                   f"Cost: ${response.cost_estimate:.4f} | "
                   f"Time: {response.duration_ms / 1000:.1f}s[/dim]")
 
     if not response.parsed:
-        console.print(f"\n  [red]\u2717 Could not parse JSON response[/red]")
+        console.print(f"\n  [red]FAIL Could not parse JSON response[/red]")
         console.print(f"  Raw response:\n{response.content[:500]}")
         log_extraction(venture_id, source_url, status="failed",
                      error_message="JSON parse failed",
@@ -172,7 +172,7 @@ def extract_paper(paper_id: str, context: str = "", force: bool = False):
     )
 
     # ── Step 7: Display results ───────────────────────────
-    console.print(f"\n  [green]\u2713[/green] Stored {stored_count} knowledge nodes\n")
+    console.print(f"\n  [green]OK[/green] Stored {stored_count} knowledge nodes\n")
 
     # Show a summary table
     table = Table(title="Extracted Knowledge Nodes", show_lines=True)

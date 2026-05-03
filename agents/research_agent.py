@@ -234,7 +234,7 @@ def extract_selected(selected: list[dict], gap_context: str, venture_id: str) ->
                                        arxiv_id, metadata.get("year"), "tier1_academic")
             stats["papers"] += 1
             stats["cost"] += response.cost_estimate
-            console.print(f"  [green]✓ {nodes_stored} nodes (${response.cost_estimate:.4f})[/green]")
+            console.print(f"  [green]OK {nodes_stored} nodes (${response.cost_estimate:.4f})[/green]")
 
         # ── Extract DOI-based papers (no ArXiv ID) via Unpaywall ──
         elif source_type == "academic_paper" and doi and not arxiv_id:
@@ -269,7 +269,7 @@ def extract_selected(selected: list[dict], gap_context: str, venture_id: str) ->
                                                doi, oa_info.get("year"), "tier1_academic")
                     stats["papers"] += 1
                     stats["cost"] += response.cost_estimate
-                    console.print(f"  [green]✓ {nodes_stored} nodes (${response.cost_estimate:.4f})[/green]")
+                    console.print(f"  [green]OK {nodes_stored} nodes (${response.cost_estimate:.4f})[/green]")
                 else:
                     console.print(f"  [red]PDF extraction failed, trying abstract...[/red]")
                     pdf_path = None  # Fall through to abstract extraction
@@ -294,7 +294,7 @@ def extract_selected(selected: list[dict], gap_context: str, venture_id: str) ->
                                                doi, None, "tier1_academic")
                     stats["papers"] += 1
                     stats["cost"] += response.cost_estimate
-                    console.print(f"  [green]✓ {nodes_stored} nodes from abstract (${response.cost_estimate:.4f})[/green]")
+                    console.print(f"  [green]OK {nodes_stored} nodes from abstract (${response.cost_estimate:.4f})[/green]")
                 else:
                     stats["failed"] += 1
                     log_extraction(venture_id, source_url, status="failed")
@@ -321,7 +321,7 @@ def extract_selected(selected: list[dict], gap_context: str, venture_id: str) ->
                                                result.year, "tier2_patent")
                     stats["patents"] += 1
                     stats["cost"] += response.cost_estimate
-                    console.print(f"  [green]✓ {nodes_stored} nodes (${response.cost_estimate:.4f})[/green]")
+                    console.print(f"  [green]OK {nodes_stored} nodes (${response.cost_estimate:.4f})[/green]")
                 else:
                     stats["failed"] += 1
                     log_extraction(venture_id, source_url, status="failed")

@@ -20,123 +20,191 @@ Usage:
 """
 
 import argparse
-from rich.console import Console
-from rich.panel import Panel
-from rich.markdown import Markdown
-from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from agents.master_brain import MasterBrain
 from agents.domain_agent import OpticsAgent
-from core.kb import get_stats, get_venture_id
+from agents.research_agent import research_gap, research_multiple_gaps
+from extraction.source_router import search_academic, search_patents, lookup_known_patents
+from core.cli_helpers import (
+    console, session,
+    parse_input, handle_global_command, get_prompt,
+    show_status, show_help_brief, display_response, run_with_spinner,
+    show_switch_menu, MODE_LABELS, MODE_COLORS,
+)
 
-console = Console()
-
-
-def show_status():
-    venture_id = get_venture_id()
-    stats = get_stats(venture_id)
-    console.print(Panel(
-        f"[bold]Knowledge Base[/bold]\n"
-        f"Total nodes: {stats.get('total', 0)}\n"
-        f"Labels: {stats.get('by_label', {})}\n"
-        f"Domains: {stats.get('by_domain', {})}\n"
-        f"Avg confidence: {stats.get('avg_confidence', 0):.1f}",
-        style="blue", title="Spine Status",
-    ))
-
-
-def display_response(response, title="Master Brain", style="magenta"):
-    if not response.success:
-        console.print(f"\n[red]Error:[/red] {response.error}")
-        return
-
-    console.print()
-    console.print(Panel(
-        Markdown(response.content),
-        title=f"[bold]{title}[/bold]",
-        subtitle=f"[dim]{response.model} | {response.input_tokens:,}+{response.output_tokens:,} tokens | ${response.cost_estimate:.4f} | {response.duration_ms/1000:.1f}s[/dim]",
-        style=style, padding=(1, 2),
-    ))
-
-
-def run_with_spinner(func, message="Thinking deeply...", *args, **kwargs):
-    with Progress(
-        SpinnerColumn(),
-        TextColumn(f"[bold magenta]{message}"),
-        console=console,
-    ) as progress:
-        task = progress.add_task(message, total=None)
-        result = func(*args, **kwargs)
-        progress.update(task, completed=True)
-    return result
+# Import PRIORITY_GAPS from research script for gap fill
+from scripts.research import PRIORITY_GAPS, show_priorities, search_preview, patent_lookup
 
 
 def interactive_mode(brain, optics_agent):
-    console.print(Panel(
-        f"[bold]Master Brain — Tier 0 Global Orchestrator[/bold]\n\n"
-        f"Strategic reasoning across all domains.\n"
-        f"The Master Brain sees connections between domains and identifies gaps.\n\n"
-        f"Commands:\n"
-        f"  [bold]review[/bold]    — Full strategic review of the venture\n"
-        f"  [bold]assess[/bold]    — Evaluate an idea (type 'assess' then describe it)\n"
-        f"  [bold]optics[/bold]    — Switch to Optics Domain Agent (direct mode)\n"
-        f"  [bold]brain[/bold]     — Switch back to Master Brain\n"
-        f"  [bold]stats[/bold]     — Show Knowledge Base status\n"
-        f"  [bold]quit[/bold]      — Exit",
-        style="magenta", title="Autonomous Disruptive Intelligence Ecosystem",
-    ))
+    console.print(f"\n[dim]Type [bold]?[/bold] for help, or ask a question.[/dim]\n")
 
-    active_agent = "brain"
+    mode = "brain"
+    mode_history = []
 
     while True:
         console.print()
-        prompt_color = "magenta" if active_agent == "brain" else "green"
-        prompt_label = "Master Brain" if active_agent == "brain" else "Optics Agent"
         try:
-            question = console.input(f"[bold {prompt_color}]{prompt_label} > [/bold {prompt_color}]").strip()
+            raw = console.input(get_prompt(mode)).strip()
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Session ended.[/dim]")
             break
 
-        if not question:
+        if not raw:
             continue
 
-        lower = question.lower()
+        cmd, args = parse_input(raw, mode)
 
-        if lower in ("quit", "exit", "q"):
+        # --- Quit ---
+        if cmd == "quit":
             console.print("[dim]Session ended.[/dim]")
             break
-        elif lower == "stats":
-            show_status()
-            continue
-        elif lower == "optics":
-            active_agent = "optics"
-            console.print("[green]Switched to Optics Agent (direct mode). Master Brain is monitoring.[/green]")
-            continue
-        elif lower == "brain":
-            active_agent = "brain"
-            console.print("[magenta]Switched to Master Brain.[/magenta]")
-            continue
-        elif lower == "review":
-            response = run_with_spinner(brain.strategic_review, "Conducting strategic review (this may take 1-2 minutes)...")
-            display_response(response, "Strategic Review", "yellow")
-            continue
-        elif lower.startswith("assess"):
-            idea = question[6:].strip()
-            if not idea:
-                idea = console.input("[bold yellow]Describe the idea to evaluate: [/bold yellow]").strip()
-            if idea:
-                response = run_with_spinner(brain.assess_idea, "Evaluating idea...", idea)
-                display_response(response, "Idea Assessment", "yellow")
+
+        # --- Global commands ---
+        if handle_global_command(cmd, args, mode):
+            session.log(raw, mode)
             continue
 
-        # Regular question
-        if active_agent == "brain":
-            response = run_with_spinner(brain.think, "Thinking across domains...", question)
-            display_response(response, "Master Brain", "magenta")
-        else:
-            response = run_with_spinner(optics_agent.ask, "Analyzing...", question)
-            display_response(response, "Optics Agent", "green")
+        # --- Navigation ---
+        if cmd == "switch":
+            show_switch_menu(mode)
+            session.log(raw, mode)
+            continue
+
+        if cmd == "nav":
+            target = args
+            if target == mode:
+                console.print(f"[dim]Already in {MODE_LABELS[mode]}.[/dim]")
+            else:
+                mode_history.append(mode)
+                mode = target
+                color = MODE_COLORS[mode]
+                console.print(f"[{color}]Switched to {MODE_LABELS[mode]}.[/{color}]")
+            session.log(raw, mode)
+            continue
+
+        if cmd == "back":
+            if mode_history:
+                mode = mode_history.pop()
+                color = MODE_COLORS[mode]
+                console.print(f"[{color}]Back to {MODE_LABELS[mode]}.[/{color}]")
+            else:
+                console.print("[dim]No previous mode to return to.[/dim]")
+            session.log(raw, mode)
+            continue
+
+        # --- Brain-specific commands ---
+        if mode == "brain":
+            if cmd == "review":
+                session.log("review", mode)
+                response = run_with_spinner(brain.strategic_review, "Conducting strategic review (this may take 1-2 minutes)...")
+                display_response(response, "Strategic Review", "yellow")
+                session.log("review (done)", mode, cost=response.cost_estimate if response.success else 0)
+                continue
+
+            if cmd == "assess":
+                idea = args
+                if not idea:
+                    idea = console.input("[bold yellow]Describe the idea to evaluate: [/bold yellow]").strip()
+                if idea:
+                    session.log(f"assess {idea[:50]}...", mode)
+                    response = run_with_spinner(brain.assess_idea, "Evaluating idea...", idea)
+                    display_response(response, "Idea Assessment", "yellow")
+                    session.log("assess (done)", mode, cost=response.cost_estimate if response.success else 0)
+                continue
+
+            if cmd == "gaps":
+                show_priorities()
+                session.log("gaps", mode)
+                continue
+
+            if cmd == "gaps_fill":
+                gap_id = args.upper()
+                gap = next((g for g in PRIORITY_GAPS if g["id"] == gap_id), None)
+                if gap:
+                    session.log(f"gaps fill {gap_id}", mode)
+                    research_gap(gap["description"], max_papers=5)
+                else:
+                    console.print(f"[red]Gap '{args}' not found. Type 'gaps' to see options.[/red]")
+                continue
+
+        # --- Research-specific commands ---
+        if mode == "research":
+            if cmd == "priorities":
+                show_priorities()
+                session.log("priorities", mode)
+                continue
+
+            if cmd == "search":
+                session.log(f"search {args[:40]}...", mode)
+                search_preview(args, "academic")
+                continue
+
+            if cmd == "patents":
+                session.log(f"patents {args[:40]}...", mode)
+                search_preview(args, "patent")
+                continue
+
+            if cmd == "lookup":
+                nums = args.split()
+                if nums:
+                    session.log(f"lookup {' '.join(nums)}", mode)
+                    patent_lookup(nums)
+                else:
+                    console.print("[yellow]Usage: lookup US12141346 US10234692[/yellow]")
+                continue
+
+            if cmd == "gap":
+                gap_id = args.upper()
+                gap = next((g for g in PRIORITY_GAPS if g["id"] == gap_id), None)
+                if gap:
+                    session.log(f"gap {gap_id}", mode)
+                    research_gap(gap["description"], max_papers=5)
+                else:
+                    console.print(f"[red]Gap '{args}' not found. Type 'priorities' to see options.[/red]")
+                continue
+
+            if cmd == "auto":
+                session.log("auto", mode)
+                showstoppers = [g["description"] for g in PRIORITY_GAPS if g["priority"] == "SHOWSTOPPER"]
+                research_multiple_gaps(showstoppers, max_papers_per_gap=5)
+                continue
+
+        # --- Optics-specific commands ---
+        if mode == "optics":
+            if cmd == "gaps":
+                session.log("gaps", mode)
+                response = run_with_spinner(optics_agent.identify_gaps, "Analyzing knowledge coverage...")
+                display_response(response, "Knowledge Gap Analysis", "yellow")
+                if response.success:
+                    session.log("gaps (done)", mode, cost=response.cost_estimate)
+                continue
+
+            if cmd == "complex":
+                # Toggle is tracked per-question, not globally in this unified interface
+                console.print("[dim]In unified mode, Opus is used for Master Brain and Sonnet for agents by default.[/dim]")
+                session.log("complex", mode)
+                continue
+
+        # --- Free-text question ---
+        if cmd == "question":
+            session.log(f"Q: {raw[:50]}...", mode)
+            if mode == "brain":
+                response = run_with_spinner(brain.think, "Thinking across domains...", raw)
+                display_response(response, "Master Brain", "magenta")
+            elif mode == "optics":
+                response = run_with_spinner(optics_agent.ask, "Analyzing...", raw)
+                display_response(response, "Optics Agent", "green")
+            elif mode == "research":
+                console.print("[yellow]Research mode accepts commands, not free questions. Type ? for help.[/yellow]")
+                continue
+            if response.success:
+                session.log("(answered)", mode, cost=response.cost_estimate)
+            continue
+
+        # --- Unknown ---
+        console.print("[yellow]Unknown command. Type ? for help.[/yellow]")
+        session.log(f"unknown: {raw[:30]}", mode)
 
 
 def main():

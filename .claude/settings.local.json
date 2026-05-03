@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"/c/Users/RubenDrong/Google Drive/Ventures/AI/Disruptive_AI_Ecosystem/Docs/Packages/ecosystem_phase0/ecosystem\" && python -c \"import scripts; import sys; print\\(sys.stdout.encoding\\)\")",
+      "Bash(cd \"/c/Users/RubenDrong/Google Drive/Ventures/AI/Disruptive_AI_Ecosystem/Docs/Packages/ecosystem_phase0/ecosystem\" && python -c \"from scripts.ask_agent import main; print\\('import OK'\\)\" && python -c \"from scripts.research import main; print\\('import OK'\\)\")",
+      "Bash(cd \"/c/Users/RubenDrong/Google Drive/Ventures/AI/Disruptive_AI_Ecosystem/Docs/Packages/ecosystem_phase0/ecosystem\" && echo -e \"?\\\\nwhere\\\\n>brain\\\\nback\\\\nquit\" | python -m scripts.ask_agent 2>&1)",
+      "Bash(cd \"/c/Users/RubenDrong/Google Drive/Ventures/AI/Disruptive_AI_Ecosystem/Docs/Packages/ecosystem_phase0/ecosystem\" && echo -e \"?\\\\nwhere\\\\npriorities\\\\n>optics\\\\nback\\\\nhistory\\\\nquit\" | python -m scripts.research 2>&1)",
+      "Bash(cd \"/c/Users/RubenDrong/Google Drive/Ventures/AI/Disruptive_AI_Ecosystem/Docs/Packages/ecosystem_phase0/ecosystem\" && python -m scripts.research --priorities 2>&1)",
+      "Bash(python -m scripts.research --gap-id GAP5)",
+      "Bash(python -m scripts.research --gap-id GAP5 --max-papers 5)"
+    ]
+  }
+}

@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 const items = [
   { icon: LayoutDashboard, label: "Dashboard", href: "/", active: true },
   { icon: Database, label: "Knowledge Base", href: "/kb", active: true },
-  { icon: Telescope, label: "Research", href: "/research", active: false },
+  { icon: Telescope, label: "Research", href: "/research", active: true },
   { icon: Brain, label: "Master Brain", href: "/master-brain", active: false },
   { icon: MessagesSquare, label: "Domain Agents", href: "/agents", active: false },
   { icon: Plug, label: "Sources", href: "/sources", active: false },
@@ -89,7 +89,7 @@ export function Sidebar() {
             Vertical slice
           </div>
           <div className="text-xs text-ink-muted mt-1 leading-relaxed">
-            Dashboard + Knowledge Base + Chat are live. More surfaces ship next.
+            Dashboard, KB, Research + Chat are live. More surfaces ship next.
           </div>
         </div>
       </div>

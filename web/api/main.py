@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from web.api.routes import kb as kb_routes
 from web.api.routes import chat as chat_routes
 from web.api.routes import meta as meta_routes
+from web.api.routes import research as research_routes
 
 
 app = FastAPI(
@@ -40,6 +41,7 @@ app.add_middleware(
 app.include_router(meta_routes.router, prefix="/api", tags=["meta"])
 app.include_router(kb_routes.router, prefix="/api/kb", tags=["kb"])
 app.include_router(chat_routes.router, prefix="/api/chat", tags=["chat"])
+app.include_router(research_routes.router, prefix="/api/research", tags=["research"])
 
 
 @app.get("/")

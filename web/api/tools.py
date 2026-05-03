@@ -79,6 +79,42 @@ def tool_master_brain_assess(args: dict, on_progress: Optional[Callable[[str], N
     return _format_agent_response(mb.assess_idea(idea, on_text=on_progress))
 
 
+def tool_research_preview(args: dict) -> dict:
+    """Preview-only multi-tier search. Read-only — does NOT mutate the KB."""
+    from dataclasses import asdict
+    from extraction.source_router import (
+        search_academic,
+        search_patents,
+        search_all,
+    )
+
+    query = (args.get("query") or "").strip()
+    if not query:
+        return {"error": "Missing 'query' argument."}
+    mode = args.get("mode", "academic")
+    limit = int(args.get("limit", 5))
+
+    if mode == "patents":
+        results = search_patents(query, limit_per_source=limit)
+    elif mode == "all":
+        results = search_all(query, limit_per_source=limit)
+    else:
+        results = search_academic(query, limit_per_source=limit)
+
+    out = []
+    for r in results[:limit * 2]:  # cap returned to avoid bloat
+        d = asdict(r)
+        d.pop("raw_data", None)
+        out.append(d)
+
+    return {
+        "count": len(out),
+        "mode": mode,
+        "query": query,
+        "results": out,
+    }
+
+
 # ── Schemas exposed to Claude ─────────────────────────────
 TOOL_SCHEMAS = [
     {
@@ -178,6 +214,39 @@ TOOL_SCHEMAS = [
             "required": ["idea"],
         },
     },
+    {
+        "name": "research_preview",
+        "description": (
+            "Preview-only multi-tier source search. Returns ranked papers/patents "
+            "without mutating the KB. Use when the user asks 'what's out there on X' "
+            "or 'are there any patents about Y'. Takes 5–20 seconds depending on "
+            "mode. Read-only and free (no Claude call). To actually extract a paper "
+            "into the KB, the user must use the Research page UI (which has a "
+            "confirmation gate)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search terms.",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["academic", "patents", "all"],
+                    "description": (
+                        "academic = Tier 1 papers (fast). patents = Tier 2 patents. "
+                        "all = every tier (slowest)."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results per source (default 5).",
+                },
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 
@@ -186,6 +255,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict], dict]] = {
     "kb_query": tool_kb_query,
     "master_brain_review": tool_master_brain_review,
     "master_brain_assess": tool_master_brain_assess,
+    "research_preview": tool_research_preview,
 }
 
 

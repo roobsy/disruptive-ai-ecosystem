@@ -37,6 +37,33 @@ export type Provenance = {
   extraction_agent: string | null;
 };
 
+export type Gap = {
+  id: string;
+  title: string;
+  severity: "showstopper" | "critical" | "strategic";
+  status: "filled" | "partially_filled" | "open";
+  description: string;
+  suggested_queries: string[];
+  suggested_mode: "academic" | "patents" | "all";
+};
+
+export type SourceResult = {
+  source_type: string;
+  title: string;
+  authors: string[];
+  year: number | null;
+  abstract: string;
+  url: string;
+  pdf_url: string;
+  doi: string;
+  arxiv_id: string;
+  patent_number: string;
+  citation_count: number;
+  credibility_tier: string;
+  has_open_access: boolean;
+  source_api: string;
+};
+
 export type Health = {
   status: string;
   supabase_configured: boolean;
@@ -73,4 +100,22 @@ export const api = {
   },
   node: (id: string) =>
     get<{ node: KBNode; provenance: Provenance[] }>(`/kb/node/${id}`),
+
+  // Research
+  gaps: () => get<{ gaps: Gap[] }>("/research/gaps"),
+  preview: async (body: {
+    query: string;
+    mode?: "academic" | "patents" | "all";
+    limit?: number;
+    year_range?: string;
+    min_citations?: number;
+  }) => {
+    const r = await fetch(`${base}/research/preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`/research/preview → ${r.status}`);
+    return r.json() as Promise<{ count: number; results: SourceResult[] }>;
+  },
 };

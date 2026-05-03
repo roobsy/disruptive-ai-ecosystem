@@ -10,7 +10,7 @@ import os
 import time
 import json
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
@@ -39,6 +39,10 @@ class AgentRequest:
     output_format: str = "json"    # "json" or "text"
     max_tokens: int = 4096
     temperature: float = 0.3
+    # Optional streaming callback. When provided, execute() uses the streaming
+    # API and invokes this with each text delta as it arrives. The full content
+    # is still returned in AgentResponse — the callback is purely additive.
+    on_text: Optional[Callable[[str], None]] = None
 
 
 @dataclass
@@ -110,18 +114,43 @@ def execute(request: AgentRequest) -> AgentResponse:
     # Execute
     start = time.time()
     try:
-        response = client.messages.create(
-            model=model,
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            system=request.system_prompt,
-            messages=messages,
-        )
+        if request.on_text is not None:
+            # Streaming path — fire on_text(delta) as text arrives, then
+            # collect the full content and final usage from the stream.
+            chunks: list[str] = []
+            with client.messages.stream(
+                model=model,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                system=request.system_prompt,
+                messages=messages,
+            ) as stream:
+                for delta in stream.text_stream:
+                    if delta:
+                        chunks.append(delta)
+                        try:
+                            request.on_text(delta)
+                        except Exception:
+                            # Consumer errors must not break generation
+                            pass
+                final_message = stream.get_final_message()
+            content = "".join(chunks)
+            input_tokens = final_message.usage.input_tokens
+            output_tokens = final_message.usage.output_tokens
+        else:
+            # Non-streaming path
+            response = client.messages.create(
+                model=model,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                system=request.system_prompt,
+                messages=messages,
+            )
+            content = response.content[0].text
+            input_tokens = response.usage.input_tokens
+            output_tokens = response.usage.output_tokens
 
         duration_ms = int((time.time() - start) * 1000)
-        content = response.content[0].text
-        input_tokens = response.usage.input_tokens
-        output_tokens = response.usage.output_tokens
 
         # Try to parse JSON if requested
         parsed = None

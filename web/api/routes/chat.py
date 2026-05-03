@@ -80,6 +80,47 @@ def _to_anthropic_messages(history: list[ChatMessage]) -> list[dict]:
     return [{"role": m.role, "content": m.content} for m in history]
 
 
+async def _run_tool_streaming(tool_id: str, name: str, args: dict):
+    """Run a tool in a worker thread while bridging on_progress callbacks
+    back to the main event loop via an asyncio.Queue.
+
+    Yields ("progress", text_delta) zero or more times, then exactly one
+    ("result", output_dict) at the end.
+    """
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    SENTINEL = object()
+
+    def on_progress(text: str):
+        # Called from the worker thread — schedule the put on the loop thread
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, ("progress", text))
+        except RuntimeError:
+            pass  # loop closed
+
+    async def _runner():
+        try:
+            result = await asyncio.to_thread(run_tool, name, args, on_progress)
+        except Exception as e:
+            result = {"error": str(e)}
+        await queue.put(("result", result))
+        await queue.put(SENTINEL)
+
+    runner = asyncio.create_task(_runner())
+
+    try:
+        while True:
+            item = await queue.get()
+            if item is SENTINEL:
+                return
+            kind, payload = item
+            yield kind, payload
+    finally:
+        if not runner.done():
+            runner.cancel()
+
+
 @router.post("")
 async def chat(req: ChatRequest):
     """Streamed chat with tool use. Returns SSE."""
@@ -166,20 +207,31 @@ async def chat(req: ChatRequest):
                     "tool_use",
                     {"id": tu["id"], "name": tu["name"], "input": tu["input"]},
                 )
-                # Run the tool off the event loop so SSE keepalive keeps flowing
-                # during long Opus calls (Master Brain reviews can take 30–90s).
-                output = await asyncio.to_thread(run_tool, tu["name"], tu["input"] or {})
-                yield _sse(
-                    "tool_result",
-                    {"id": tu["id"], "name": tu["name"], "output": output},
-                )
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tu["id"],
-                        "content": json.dumps(output)[:30000],
-                    }
-                )
+
+                # Run the tool off the event loop, but bridge progress events
+                # back into the SSE stream so the UI can render live deltas
+                # while Opus generates.
+                async for kind, payload in _run_tool_streaming(
+                    tu["id"], tu["name"], tu["input"] or {}
+                ):
+                    if kind == "progress":
+                        yield _sse(
+                            "tool_progress",
+                            {"id": tu["id"], "delta": payload},
+                        )
+                    else:
+                        output = payload
+                        yield _sse(
+                            "tool_result",
+                            {"id": tu["id"], "name": tu["name"], "output": output},
+                        )
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tu["id"],
+                                "content": json.dumps(output)[:30000],
+                            }
+                        )
 
             messages.append({"role": "user", "content": tool_results})
 

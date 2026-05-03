@@ -14,6 +14,8 @@ Capabilities:
 - Knowledge Base oversight (monitors health and coverage)
 """
 
+from typing import Callable, Optional
+
 from core.model_router import AgentRequest, AgentResponse, execute
 from core.kb import get_nodes, get_venture_id, get_stats
 
@@ -95,11 +97,18 @@ When answering, structure your thinking as:
 4. Strategic recommendation (what to do next)
 """
 
-    def think(self, question: str, complexity: str = "complex") -> AgentResponse:
+    def think(
+        self,
+        question: str,
+        complexity: str = "complex",
+        on_text: Optional[Callable[[str], None]] = None,
+    ) -> AgentResponse:
         """Strategic thinking across all domains.
 
         Defaults to complex (Opus) because the Master Brain
         handles high-level reasoning that benefits from depth.
+
+        Pass on_text to receive streaming text deltas while the model generates.
         """
         nodes = self._get_full_context(limit=60)
         knowledge = self._format_knowledge(nodes)
@@ -113,11 +122,15 @@ When answering, structure your thinking as:
             output_format="text",
             max_tokens=6144,
             temperature=0.4,
+            on_text=on_text,
         )
 
         return execute(request)
 
-    def strategic_review(self) -> AgentResponse:
+    def strategic_review(
+        self,
+        on_text: Optional[Callable[[str], None]] = None,
+    ) -> AgentResponse:
         """Comprehensive strategic review of the venture's knowledge state."""
         nodes = self._get_full_context(limit=60)
         knowledge = self._format_knowledge(nodes)
@@ -149,11 +162,16 @@ This is the Master Brain's most important function. Be thorough, honest, and str
             output_format="text",
             max_tokens=8192,
             temperature=0.3,
+            on_text=on_text,
         )
 
         return execute(request)
 
-    def assess_idea(self, idea: str) -> AgentResponse:
+    def assess_idea(
+        self,
+        idea: str,
+        on_text: Optional[Callable[[str], None]] = None,
+    ) -> AgentResponse:
         """Evaluate an idea against the full Knowledge Base.
 
         This is a lightweight version of the Dialectic Engine —
@@ -189,6 +207,7 @@ Be brutally honest. The value of this assessment is in its accuracy, not its opt
             output_format="text",
             max_tokens=6144,
             temperature=0.3,
+            on_text=on_text,
         )
 
         return execute(request)

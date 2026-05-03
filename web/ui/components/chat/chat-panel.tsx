@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Send,
   Sparkles,
@@ -17,6 +17,7 @@ type ToolCall = {
   name: string;
   input: any;
   output?: any;
+  progress?: string; // accumulated streaming text while running
 };
 
 type Message = {
@@ -150,6 +151,21 @@ export function ChatPanel() {
                   ...(msg.tools || []),
                   { id: ev.data.id, name: ev.data.name, input: ev.data.input },
                 ],
+              }
+            : msg
+        )
+      );
+    } else if (ev.event === "tool_progress") {
+      setMessages((m) =>
+        m.map((msg) =>
+          msg.id === assistantId
+            ? {
+                ...msg,
+                tools: (msg.tools || []).map((t) =>
+                  t.id === ev.data.id
+                    ? { ...t, progress: (t.progress || "") + (ev.data.delta || "") }
+                    : t
+                ),
               }
             : msg
         )
@@ -303,18 +319,37 @@ const EXPENSIVE_TOOLS = new Set(["master_brain_review", "master_brain_assess"]);
 function ToolCard({ tool }: { tool: ToolCall }) {
   const isExpensive = EXPENSIVE_TOOLS.has(tool.name);
   const running = tool.output === undefined;
+  const streaming = running && (tool.progress?.length ?? 0) > 0;
   // Auto-expand expensive tools while running so the user sees activity.
   const [open, setOpen] = useState(isExpensive && running);
   const out = tool.output as any;
   const failed = out && (out.success === false || out.error);
   const hasProse = out && typeof out.content === "string" && out.content.length > 0;
 
-  const status = running ? (isExpensive ? "Thinking" : "Running") : failed ? "Failed" : "Complete";
+  const status = running
+    ? streaming
+      ? "Streaming"
+      : isExpensive
+        ? "Thinking"
+        : "Running"
+    : failed
+      ? "Failed"
+      : "Complete";
   const statusClass = running
-    ? "text-amber-600"
+    ? streaming
+      ? "text-accent"
+      : "text-amber-600"
     : failed
       ? "text-rose-600"
       : "text-emerald-600";
+
+  // Auto-scroll the streaming pane to bottom as new tokens arrive
+  const streamRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (streamRef.current) {
+      streamRef.current.scrollTop = streamRef.current.scrollHeight;
+    }
+  }, [tool.progress]);
 
   return (
     <div
@@ -337,13 +372,18 @@ function ToolCard({ tool }: { tool: ToolCall }) {
           <ChevronRight className="h-3 w-3 text-ink-subtle" />
         )}
         {isExpensive ? (
-          <Sparkles className={cn("h-3 w-3", running ? "text-accent animate-pulse" : "text-accent")} />
+          <Sparkles className={cn("h-3 w-3 text-accent", running && "animate-pulse")} />
         ) : failed ? (
           <AlertCircle className="h-3 w-3 text-rose-600" />
         ) : (
           <Wrench className="h-3 w-3 text-accent" />
         )}
         <span className="text-[11px] font-mono text-ink">{tool.name}</span>
+        {streaming && (
+          <span className="text-[10px] font-mono text-ink-subtle">
+            {(tool.progress?.length ?? 0).toLocaleString()} ch
+          </span>
+        )}
         <span className={cn("ml-auto text-[10px] uppercase tracking-wider", statusClass)}>
           {status}
           {running && <span className="ml-1 inline-block animate-pulse">·</span>}
@@ -362,10 +402,27 @@ function ToolCard({ tool }: { tool: ToolCall }) {
             </div>
           )}
 
-          {running && (
+          {/* Live streaming pane while running */}
+          {running && streaming && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-accent">
+                Streaming · {(tool.progress?.length ?? 0).toLocaleString()} chars
+              </div>
+              <div
+                ref={streamRef}
+                className="mt-0.5 text-[12px] leading-relaxed bg-accent-soft/40 border border-accent-ring/30 rounded p-2.5 max-h-72 overflow-y-auto whitespace-pre-wrap text-ink"
+              >
+                {tool.progress}
+                <span className="inline-block ml-0.5 h-3 w-1.5 align-middle bg-accent/60 animate-pulse" />
+              </div>
+            </div>
+          )}
+
+          {/* Pre-stream waiting state */}
+          {running && !streaming && (
             <div className="text-[11px] text-ink-muted italic px-0.5">
               {isExpensive
-                ? "Calling Opus across the full Knowledge Base — this can take 30–90 seconds."
+                ? "Calling Opus across the full Knowledge Base — first tokens usually arrive within 5–10 seconds."
                 : "Running…"}
             </div>
           )}

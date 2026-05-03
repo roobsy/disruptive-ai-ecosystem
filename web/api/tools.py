@@ -3,9 +3,16 @@ Tool definitions for the chat agent.
 
 Each tool exposes a backend capability to Claude. Adding a tool here
 makes it instantly invocable from the chat panel.
+
+Tool handlers may optionally accept an `on_progress` callback. When provided
+by run_tool, the handler should forward token-level progress (e.g. via the
+on_text callback in AgentRequest) so the UI can render live deltas inside
+the tool card.
 """
 
-from typing import Callable
+import inspect
+from typing import Callable, Optional
+
 from core.kb import get_stats, get_nodes, get_venture_id
 
 
@@ -57,19 +64,19 @@ def _format_agent_response(resp) -> dict:
     }
 
 
-def tool_master_brain_review(_args: dict) -> dict:
+def tool_master_brain_review(_args: dict, on_progress: Optional[Callable[[str], None]] = None) -> dict:
     from agents.master_brain import MasterBrain
     mb = MasterBrain()
-    return _format_agent_response(mb.strategic_review())
+    return _format_agent_response(mb.strategic_review(on_text=on_progress))
 
 
-def tool_master_brain_assess(args: dict) -> dict:
+def tool_master_brain_assess(args: dict, on_progress: Optional[Callable[[str], None]] = None) -> dict:
     idea = (args.get("idea") or "").strip()
     if not idea:
         return {"success": False, "error": "Missing 'idea' argument."}
     from agents.master_brain import MasterBrain
     mb = MasterBrain()
-    return _format_agent_response(mb.assess_idea(idea))
+    return _format_agent_response(mb.assess_idea(idea, on_text=on_progress))
 
 
 # ── Schemas exposed to Claude ─────────────────────────────
@@ -182,12 +189,22 @@ TOOL_HANDLERS: dict[str, Callable[[dict], dict]] = {
 }
 
 
-def run_tool(name: str, args: dict) -> dict:
-    """Execute a tool by name. Returns a JSON-serializable result."""
+def run_tool(
+    name: str,
+    args: dict,
+    on_progress: Optional[Callable[[str], None]] = None,
+) -> dict:
+    """Execute a tool by name. Returns a JSON-serializable result.
+
+    If on_progress is provided and the handler signature accepts it, the
+    callback is forwarded for streaming progress events.
+    """
     handler = TOOL_HANDLERS.get(name)
     if not handler:
         return {"error": f"Unknown tool: {name}"}
     try:
+        if on_progress is not None and "on_progress" in inspect.signature(handler).parameters:
+            return handler(args or {}, on_progress=on_progress)
         return handler(args or {})
     except Exception as e:
         return {"error": str(e)}

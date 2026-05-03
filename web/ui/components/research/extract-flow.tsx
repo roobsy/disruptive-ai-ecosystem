@@ -5,12 +5,14 @@ import { SourceResult } from "@/lib/api";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Badge, labelToTone } from "@/components/ui/badge";
-import { CheckCircle2, AlertCircle, Loader2, X } from "lucide-react";
+import { CheckCircle2, AlertCircle, Loader2, X, Info } from "lucide-react";
 import { cn, titleCase } from "@/lib/utils";
 
 type Stage =
   | "idle"
+  | "plan"
   | "metadata"
+  | "unpaywall"
   | "download"
   | "epistemic_filter"
   | "store"
@@ -41,7 +43,9 @@ type ExtractedSummary = {
 
 const STAGE_LABEL: Record<Stage, string> = {
   idle: "Ready",
+  plan: "Planning",
   metadata: "Fetching metadata",
+  unpaywall: "Looking up open access",
   download: "Downloading PDF",
   epistemic_filter: "Running Epistemic Filter",
   store: "Storing nodes",
@@ -50,7 +54,30 @@ const STAGE_LABEL: Record<Stage, string> = {
   skipped: "Skipped",
 };
 
-const STAGES: Stage[] = ["metadata", "download", "epistemic_filter", "store"];
+const STAGES: Stage[] = ["plan", "download", "epistemic_filter", "store"];
+
+type Plan = { strategy: string; reason: string; require_pdf: boolean };
+type Fallback = { from: string; to: string; char_count: number; message: string };
+
+function describeStrategy(candidate: SourceResult): { label: string; hint: string } {
+  if (candidate.arxiv_id)
+    return { label: "ArXiv full PDF", hint: "Best fidelity. Full text + figures." };
+  if (candidate.pdf_url)
+    return { label: "Direct PDF", hint: `Fetching ${candidate.pdf_url.slice(0, 48)}…` };
+  if (candidate.doi)
+    return {
+      label: "DOI → Unpaywall",
+      hint: "Looks up open-access PDF; falls back to abstract if none.",
+    };
+  if (candidate.patent_number)
+    return {
+      label: "Google Patents PDF",
+      hint: "Tries Google Patents PDF; falls back to abstract.",
+    };
+  if (candidate.abstract)
+    return { label: "Abstract only", hint: "No PDF source — abstract text only." };
+  return { label: "Unavailable", hint: "Nothing extractable." };
+}
 
 export function ExtractFlow({
   candidate,
@@ -60,12 +87,21 @@ export function ExtractFlow({
   onClose: () => void;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [requirePdf, setRequirePdf] = useState(false);
   const [stage, setStage] = useState<Stage>("idle");
   const [stageMessage, setStageMessage] = useState("");
+  const [plan, setPlan] = useState<Plan | null>(null);
+  const [fallback, setFallback] = useState<Fallback | null>(null);
   const [extracted, setExtracted] = useState<ExtractedSummary | null>(null);
   const [stored, setStored] = useState<StoredEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<{ stored: number; cost_usd: number; duration_seconds: number } | null>(null);
+  const [done, setDone] = useState<{
+    stored: number;
+    cost_usd: number;
+    duration_seconds: number;
+    fallback_used?: boolean;
+    strategy?: string;
+  } | null>(null);
   const [skipped, setSkipped] = useState<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
@@ -81,6 +117,8 @@ export function ExtractFlow({
   function reset() {
     setStage("idle");
     setStageMessage("");
+    setPlan(null);
+    setFallback(null);
     setExtracted(null);
     setStored([]);
     setError(null);
@@ -96,7 +134,7 @@ export function ExtractFlow({
   async function startExtraction() {
     if (!candidate) return;
     setConfirmOpen(false);
-    setStage("metadata");
+    setStage("plan");
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -106,9 +144,23 @@ export function ExtractFlow({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          paper_id: candidate.arxiv_id,
+          source: {
+            arxiv_id: candidate.arxiv_id,
+            doi: candidate.doi,
+            patent_number: candidate.patent_number,
+            pdf_url: candidate.pdf_url,
+            url: candidate.url,
+            title: candidate.title,
+            authors: candidate.authors,
+            year: candidate.year,
+            abstract: candidate.abstract,
+            source_type: candidate.source_type,
+            source_api: candidate.source_api,
+            credibility_tier: candidate.credibility_tier,
+          },
           context: "",
           force: false,
+          require_pdf: requirePdf,
         }),
         signal: controller.signal,
       });
@@ -141,11 +193,19 @@ export function ExtractFlow({
   }
 
   function handle(ev: { event: string; data: any }) {
-    if (ev.event === "stage") {
+    if (ev.event === "plan") {
+      setPlan({
+        strategy: ev.data.strategy,
+        reason: ev.data.reason,
+        require_pdf: ev.data.require_pdf,
+      });
+    } else if (ev.event === "stage") {
       setStage(ev.data.name as Stage);
       setStageMessage(ev.data.message || "");
+    } else if (ev.event === "fallback") {
+      setFallback(ev.data as Fallback);
     } else if (ev.event === "metadata") {
-      // We already have candidate metadata; nothing to do
+      // pass — candidate already has metadata
     } else if (ev.event === "downloaded") {
       // pass
     } else if (ev.event === "extracted") {
@@ -164,6 +224,8 @@ export function ExtractFlow({
           stored: ev.data.stored,
           cost_usd: ev.data.cost_usd,
           duration_seconds: ev.data.duration_seconds,
+          fallback_used: ev.data.fallback_used,
+          strategy: ev.data.strategy,
         });
         setStage("done");
       }
@@ -172,26 +234,46 @@ export function ExtractFlow({
 
   if (!candidate) return null;
 
+  const strategyDescription = describeStrategy(candidate);
+  const sourceLabel = candidate.arxiv_id
+    ? `arXiv:${candidate.arxiv_id}`
+    : candidate.patent_number
+      ? candidate.patent_number
+      : candidate.doi
+        ? `doi:${candidate.doi}`
+        : candidate.source_api;
+  const description =
+    `This will use Sonnet 4.6 to extract 5–30 epistemically labelled ` +
+    `knowledge nodes from the source and insert them into the KB with ` +
+    `full provenance. The KB will be modified.`;
+
   return (
     <>
       <ConfirmModal
         open={confirmOpen}
-        title="Extract this paper into the Knowledge Base?"
-        description={
-          `This will download the PDF, run Sonnet 4.6 to extract 10–30 ` +
-          `epistemically labelled knowledge nodes, and insert them into the KB ` +
-          `with full provenance. The KB will be modified.`
-        }
+        title="Extract this source into the Knowledge Base?"
+        description={description}
         stats={[
-          { label: "Paper", value: candidate.title.slice(0, 60) + (candidate.title.length > 60 ? "…" : "") },
-          { label: "Source", value: `arXiv:${candidate.arxiv_id}`, tone: "info" },
+          {
+            label: "Paper",
+            value:
+              candidate.title.slice(0, 60) +
+              (candidate.title.length > 60 ? "…" : ""),
+          },
+          { label: "Source", value: sourceLabel, tone: "info" },
+          { label: "Strategy", value: strategyDescription.label, tone: "info" },
           { label: "Estimated cost", value: "~$0.02–0.08", tone: "warn" },
-          { label: "Estimated time", value: "30–90 seconds", tone: "warn" },
         ]}
         confirmLabel="Confirm and extract"
         onConfirm={startExtraction}
         onCancel={cancelConfirm}
-      />
+      >
+        <RequirePdfToggle
+          value={requirePdf}
+          onChange={setRequirePdf}
+          strategy={strategyDescription}
+        />
+      </ConfirmModal>
 
       {/* Progress panel — visible after confirmation */}
       {!confirmOpen && (
@@ -263,6 +345,38 @@ export function ExtractFlow({
 
             {/* Body — scrolls */}
             <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+              {plan && (
+                <div className="rounded-lg border border-accent-ring/40 bg-accent-soft/40 p-3">
+                  <div className="flex items-start gap-2">
+                    <Info className="h-3.5 w-3.5 text-accent mt-0.5 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[10px] uppercase tracking-wider text-accent font-semibold">
+                        Strategy: {plan.strategy}
+                      </div>
+                      <div className="text-[12px] text-ink-muted mt-0.5 leading-relaxed">
+                        {plan.reason}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {fallback && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="h-3.5 w-3.5 text-amber-600 mt-0.5 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[10px] uppercase tracking-wider text-amber-700 font-semibold">
+                        Falling back: {fallback.from} → {fallback.to}
+                      </div>
+                      <div className="text-[12px] text-amber-800 mt-0.5 leading-relaxed">
+                        {fallback.message}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {error && (
                 <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-3">
                   {error}
@@ -349,6 +463,42 @@ export function ExtractFlow({
         </div>
       )}
     </>
+  );
+}
+
+function RequirePdfToggle({
+  value,
+  onChange,
+  strategy,
+}: {
+  value: boolean;
+  onChange: (v: boolean) => void;
+  strategy: { label: string; hint: string };
+}) {
+  return (
+    <div>
+      <label className="flex items-start gap-2 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={value}
+          onChange={(e) => onChange(e.target.checked)}
+          className="mt-1 h-3.5 w-3.5 accent-accent"
+        />
+        <div className="flex-1 min-w-0">
+          <div className="text-[12px] font-medium text-ink leading-tight">
+            Require full PDF
+          </div>
+          <div className="text-[11px] text-ink-muted leading-relaxed mt-0.5">
+            {value
+              ? "If a PDF can't be acquired, fail rather than fall back to abstract-only extraction."
+              : `If no PDF is available, extract from abstract text (lower quality, fewer/lower-confidence nodes, tagged "abstract_only").`}
+          </div>
+          <div className="mt-1 text-[10px] text-ink-subtle font-mono">
+            Planned: {strategy.label} — {strategy.hint}
+          </div>
+        </div>
+      </label>
+    </div>
   );
 }
 

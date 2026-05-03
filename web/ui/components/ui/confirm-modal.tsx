@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { ReactNode, useEffect } from "react";
 import { AlertTriangle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -21,6 +21,7 @@ export function ConfirmModal({
   destructive = false,
   onConfirm,
   onCancel,
+  children,
 }: {
   open: boolean;
   title: string;
@@ -31,6 +32,7 @@ export function ConfirmModal({
   destructive?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+  children?: ReactNode;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -98,6 +100,10 @@ export function ConfirmModal({
               </div>
             ))}
           </div>
+        )}
+
+        {children && (
+          <div className="px-5 pb-2 border-t border-ink-line pt-3">{children}</div>
         )}
 
         <div className="px-5 pb-4 pt-2 flex items-center justify-end gap-2">

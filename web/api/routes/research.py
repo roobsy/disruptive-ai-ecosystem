@@ -24,15 +24,9 @@ from extraction.source_router import (
     lookup_known_patents,
 )
 from extraction.source_interface import SourceResult
-from extraction.sources.arxiv import download_pdf, get_paper_metadata
-from core.epistemic_filter import extract_from_pdf
-from core.kb import (
-    get_venture_id,
-    store_node,
-    store_provenance,
-    log_extraction,
-    check_already_extracted,
-)
+from core.kb import get_venture_id
+
+from web.api.extraction_pipeline import ExtractSource, run_extraction
 
 router = APIRouter()
 
@@ -147,9 +141,10 @@ class PreviewRequest(BaseModel):
 
 
 class ExtractRequest(BaseModel):
-    paper_id: str
+    source: ExtractSource
     context: str = ""
     force: bool = False
+    require_pdf: bool = False  # if True, skip the abstract-text fallback
 
 
 class PatentLookupRequest(BaseModel):
@@ -223,18 +218,18 @@ async def lookup_patents(req: PatentLookupRequest):
 
 @router.post("/extract")
 async def extract(req: ExtractRequest):
-    """Stream the extraction pipeline as SSE events.
+    """Stream the unified extraction pipeline as SSE events.
 
-    Stages: metadata → already-extracted check → pdf-download → epistemic-filter
-            → store-nodes → done.
+    Routes to the right strategy based on what identifiers the source has:
+        ArXiv ID → arxiv PDF
+        Direct pdf_url → fetch directly
+        DOI → Unpaywall lookup → OA PDF
+        Patent number → Google Patents PDF
+        Otherwise → abstract-text fallback (unless require_pdf is True)
 
     MUTATES the Knowledge Base. Caller must have presented a confirmation
     gate to the user before invoking this endpoint.
     """
-    paper_id = req.paper_id.strip()
-    if not paper_id:
-        raise HTTPException(status_code=400, detail="Missing paper_id.")
-
     def _sse(event: str, data: dict):
         return {"event": event, "data": json.dumps(data)}
 
@@ -245,195 +240,18 @@ async def extract(req: ExtractRequest):
             yield _sse("error", {"message": f"KB unavailable: {e}"})
             return
 
-        # Stage 1: metadata
-        yield _sse("stage", {"name": "metadata", "message": "Fetching paper metadata…"})
-        metadata = await asyncio.to_thread(get_paper_metadata, paper_id)
-        source_url = metadata.get("url") or paper_id
-        yield _sse(
-            "metadata",
-            {
-                "title": metadata.get("title"),
-                "authors": metadata.get("authors", [])[:8],
-                "year": metadata.get("year"),
-                "url": source_url,
-            },
-        )
-
-        # Stage 2: already-extracted check
-        if not req.force:
-            already = await asyncio.to_thread(
-                check_already_extracted, venture_id, source_url
-            )
-            if already:
-                yield _sse(
-                    "skipped",
-                    {
-                        "message": "Paper already extracted. Pass force=true to re-extract.",
-                        "url": source_url,
-                    },
-                )
-                yield _sse("done", {"stop_reason": "already_extracted"})
-                return
-
-        # Stage 3: PDF download
-        yield _sse("stage", {"name": "download", "message": "Downloading PDF…"})
-        pdf_path = await asyncio.to_thread(download_pdf, paper_id)
-        if not pdf_path:
-            await asyncio.to_thread(
-                log_extraction,
-                venture_id,
-                source_url,
-                status="failed",
-                error_message="PDF download failed",
-            )
-            yield _sse("error", {"message": "PDF download failed."})
-            return
-        yield _sse("downloaded", {"path": str(pdf_path)})
-
-        # Stage 4: Epistemic Filter
-        yield _sse(
-            "stage",
-            {
-                "name": "epistemic_filter",
-                "message": "Running Epistemic Filter (30–60s)…",
-            },
-        )
-        response = await asyncio.to_thread(
-            extract_from_pdf, str(pdf_path), req.context
-        )
-
-        if not response.success:
-            await asyncio.to_thread(
-                log_extraction,
-                venture_id,
-                source_url,
-                status="failed",
-                error_message=response.error,
-                cost_input_tokens=response.input_tokens,
-                cost_output_tokens=response.output_tokens,
-            )
-            yield _sse(
-                "error",
-                {"message": f"Extraction failed: {response.error}"},
-            )
-            return
-
-        if not response.parsed:
-            await asyncio.to_thread(
-                log_extraction,
-                venture_id,
-                source_url,
-                status="failed",
-                error_message="JSON parse failed",
-                cost_input_tokens=response.input_tokens,
-                cost_output_tokens=response.output_tokens,
-            )
-            yield _sse(
-                "error",
-                {"message": "Could not parse JSON response from the model."},
-            )
-            return
-
-        nodes_data = response.parsed.get("nodes", [])
-        source_summary = response.parsed.get("source_summary", "")
-        source_type = response.parsed.get("source_type", "academic_paper")
-
-        yield _sse(
-            "extracted",
-            {
-                "node_count": len(nodes_data),
-                "summary": source_summary,
-                "model": response.model,
-                "duration_ms": response.duration_ms,
-                "cost_usd": round(response.cost_estimate, 4),
-                "input_tokens": response.input_tokens,
-                "output_tokens": response.output_tokens,
-                # Preview of each node (label + summary) so the UI can render
-                # what's about to be stored
-                "nodes_preview": [
-                    {
-                        "epistemic_label": n.get("epistemic_label"),
-                        "summary": n.get("summary") or n.get("content", "")[:120],
-                        "domain": n.get("domain"),
-                        "confidence": n.get("confidence"),
-                    }
-                    for n in nodes_data
-                ],
-            },
-        )
-
-        # Stage 5: Store
-        yield _sse("stage", {"name": "store", "message": "Storing nodes in KB…"})
-        stored = 0
-        errors: list[str] = []
-
-        def _store_one(node_data: dict):
-            node = store_node(
+        try:
+            async for event_name, payload in run_extraction(
+                source=req.source,
+                context=req.context,
+                force=req.force,
+                require_pdf=req.require_pdf,
                 venture_id=venture_id,
-                epistemic_label=node_data.get(
-                    "epistemic_label", "cognitive_framework"
-                ),
-                content=node_data.get("content", ""),
-                summary=node_data.get("summary"),
-                confidence=node_data.get("confidence", 50),
-                decay_rate=node_data.get("decay_rate", 365),
-                domain=node_data.get("domain"),
-                tags=node_data.get("tags", []),
-                created_by="extraction_engine",
-            )
-            if node:
-                store_provenance(
-                    node_id=node["id"],
-                    source_type=source_type,
-                    source_url=source_url,
-                    source_title=metadata.get("title"),
-                    source_authors=metadata.get("authors", []),
-                    source_doi=metadata.get("arxiv_id"),
-                    source_year=metadata.get("year"),
-                    credibility_tier="tier1_academic",
-                )
-            return node
-
-        for i, node_data in enumerate(nodes_data, 1):
-            try:
-                node = await asyncio.to_thread(_store_one, node_data)
-                if node:
-                    stored += 1
-                    yield _sse(
-                        "stored",
-                        {
-                            "index": i,
-                            "total": len(nodes_data),
-                            "node_id": node.get("id"),
-                            "summary": node_data.get("summary")
-                            or node_data.get("content", "")[:120],
-                        },
-                    )
-            except Exception as e:
-                errors.append(str(e))
-
-        # Log
-        await asyncio.to_thread(
-            log_extraction,
-            venture_id,
-            source_url,
-            source_type=source_type,
-            status="completed",
-            nodes_created=stored,
-            cost_input_tokens=response.input_tokens,
-            cost_output_tokens=response.output_tokens,
-            processing_time_ms=response.duration_ms,
-        )
-
-        yield _sse(
-            "done",
-            {
-                "stop_reason": "completed",
-                "stored": stored,
-                "errors": errors,
-                "cost_usd": round(response.cost_estimate, 4),
-                "duration_seconds": round(response.duration_ms / 1000, 1),
-            },
-        )
+            ):
+                yield _sse(event_name, payload)
+        except Exception as e:
+            tb = traceback.format_exc()
+            print(f"[research/extract] pipeline error:\n{tb}", file=sys.stderr)
+            yield _sse("error", {"message": f"{type(e).__name__}: {e}"})
 
     return EventSourceResponse(event_stream())

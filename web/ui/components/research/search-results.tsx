@@ -31,7 +31,23 @@ export function SearchResults({
     <div className="space-y-2">
       {results.map((r, i) => {
         const id = r.arxiv_id || r.patent_number || r.doi || `${r.source_api}-${i}`;
-        const canExtract = !!r.arxiv_id; // current pipeline only supports ArXiv
+        // Pipeline now supports: arxiv (full PDF), direct pdf_url, DOI via
+        // Unpaywall, patent via Google Patents, or abstract-only fallback.
+        const canExtract =
+          !!r.arxiv_id ||
+          !!r.pdf_url ||
+          !!r.doi ||
+          !!r.patent_number ||
+          !!r.abstract;
+        const extractHint = r.arxiv_id
+          ? "ArXiv full PDF"
+          : r.pdf_url
+            ? "Direct PDF"
+            : r.doi
+              ? "Open-access PDF via Unpaywall (or abstract fallback)"
+              : r.patent_number
+                ? "Google Patents PDF (or abstract fallback)"
+                : "Abstract-only extraction";
         return (
           <div
             key={id}
@@ -115,8 +131,8 @@ export function SearchResults({
                   onClick={() => canExtract && onExtract(r)}
                   title={
                     canExtract
-                      ? "Open the extraction confirmation modal"
-                      : "Extraction currently supported for ArXiv papers only"
+                      ? `Open the extraction confirmation modal — ${extractHint}`
+                      : "No extractable content (no ID, URL, or abstract)"
                   }
                 >
                   Extract

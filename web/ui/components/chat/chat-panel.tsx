@@ -87,9 +87,10 @@ export function ChatPanel() {
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        // Normalize CRLF → LF so the frame separator is always \n\n.
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
 
-        // Parse SSE frames separated by blank lines
+        // Parse SSE frames separated by a blank line
         let idx;
         while ((idx = buffer.indexOf("\n\n")) !== -1) {
           const frame = buffer.slice(0, idx);
@@ -154,6 +155,22 @@ export function ChatPanel() {
                 tools: (msg.tools || []).map((t) =>
                   t.id === ev.data.id ? { ...t, output: ev.data.output } : t
                 ),
+              }
+            : msg
+        )
+      );
+    } else if (ev.event === "error") {
+      setMessages((m) =>
+        m.map((msg) =>
+          msg.id === assistantId
+            ? {
+                ...msg,
+                text:
+                  msg.text +
+                  `\n\nError: ${ev.data?.message || "unknown"}${
+                    ev.data?.model ? ` (model: ${ev.data.model})` : ""
+                  }`,
+                pending: false,
               }
             : msg
         )

@@ -14,6 +14,8 @@ end_turn.
 
 import json
 import os
+import sys
+import traceback
 from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -72,25 +74,46 @@ async def chat(req: ChatRequest):
     """Streamed chat with tool use. Returns SSE."""
 
     async def event_stream():
-        client = _client()
+        try:
+            client = _client()
+        except Exception as e:
+            print(f"[chat] client init failed: {e}", file=sys.stderr)
+            yield _sse("error", {"message": f"Anthropic client init failed: {e}"})
+            yield _sse("done", {"stop_reason": "error"})
+            return
+
         model = req.model or _model()
         messages = _to_anthropic_messages(req.messages)
+        print(f"[chat] starting stream, model={model}, turns_in={len(messages)}", file=sys.stderr)
 
         # Tool-use loop. Each iteration is one Claude turn; if Claude requests
         # tool calls we run them and continue the loop.
-        for _ in range(8):  # hard cap
-            with client.messages.stream(
-                model=model,
-                max_tokens=2048,
-                system=SYSTEM_PROMPT,
-                tools=TOOL_SCHEMAS,
-                messages=messages,
-            ) as stream:
-                for chunk in stream.text_stream:
-                    if chunk:
-                        yield _sse("text", {"delta": chunk})
+        for turn in range(8):  # hard cap
+            try:
+                with client.messages.stream(
+                    model=model,
+                    max_tokens=2048,
+                    system=SYSTEM_PROMPT,
+                    tools=TOOL_SCHEMAS,
+                    messages=messages,
+                ) as stream:
+                    for chunk in stream.text_stream:
+                        if chunk:
+                            yield _sse("text", {"delta": chunk})
 
-                final = stream.get_final_message()
+                    final = stream.get_final_message()
+            except Exception as e:
+                tb = traceback.format_exc()
+                print(f"[chat] anthropic call failed on turn {turn}:\n{tb}", file=sys.stderr)
+                yield _sse(
+                    "error",
+                    {
+                        "message": f"{type(e).__name__}: {e}",
+                        "model": model,
+                    },
+                )
+                yield _sse("done", {"stop_reason": "error"})
+                return
 
             assistant_blocks: list[dict] = []
             tool_uses: list[dict] = []

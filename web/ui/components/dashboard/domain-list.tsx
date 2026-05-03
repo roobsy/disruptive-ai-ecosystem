@@ -3,13 +3,23 @@ import { titleCase } from "@/lib/utils";
 
 const VENTURE_RELEVANT = new Set([
   "ophthalmology",
-  "computer_science",
-  "display_technology",
-  "video_quality_assessment",
   "optics",
+  "display_technology",
+  "computer_science",
+  "computer_graphics",
+  "vision_science",
+  "video_quality_assessment",
+  "video_processing",
+  "image_processing",
+  "computational_imaging",
   "neuroscience",
   "psychophysics",
   "perception",
+  "machine_learning",
+  "human_computer_interaction",
+  "materials_science",
+  "photonics",
+  "signal_processing",
 ]);
 
 export function DomainList({ byDomain }: { byDomain: Record<string, number> }) {

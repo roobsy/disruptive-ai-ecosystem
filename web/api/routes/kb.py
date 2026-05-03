@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from core.kb import get_stats, get_nodes, get_venture_id
+from core.kb import get_stats, get_nodes, get_venture_id, get_supabase
 
 router = APIRouter()
 
@@ -55,3 +55,35 @@ def list_nodes(
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
     return {"nodes": nodes, "count": len(nodes)}
+
+
+@router.get("/node/{node_id}")
+def node_detail(node_id: str):
+    """Return a single node with its full content and any linked provenance."""
+    vid = _venture_id()
+    sb = get_supabase()
+    try:
+        node_q = (
+            sb.table("knowledge_nodes")
+            .select("*")
+            .eq("id", node_id)
+            .eq("venture_id", vid)
+            .execute()
+        )
+        if not node_q.data:
+            raise HTTPException(status_code=404, detail="Node not found.")
+        node = node_q.data[0]
+
+        prov_q = (
+            sb.table("provenance")
+            .select("*")
+            .eq("node_id", node_id)
+            .execute()
+        )
+        provenance = prov_q.data or []
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    return {"node": node, "provenance": provenance}

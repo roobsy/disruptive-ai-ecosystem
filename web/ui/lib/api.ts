@@ -18,6 +18,23 @@ export type KBNode = {
   confidence: number;
   lifecycle_state: string;
   tags?: string[];
+  decay_rate?: number;
+  created_by?: string;
+  created_at?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type Provenance = {
+  id: string;
+  node_id: string;
+  source_type: string;
+  source_url: string | null;
+  source_title: string | null;
+  source_authors: string[] | null;
+  source_doi: string | null;
+  source_year: number | null;
+  credibility_tier: string | null;
+  extraction_agent: string | null;
 };
 
 export type Health = {
@@ -46,10 +63,14 @@ export const api = {
   stats: () => get<KBStats>("/kb/stats"),
   nodes: (params: Record<string, string | number> = {}) => {
     const qs = new URLSearchParams(
-      Object.entries(params).map(([k, v]) => [k, String(v)])
+      Object.entries(params)
+        .filter(([, v]) => v !== "" && v !== undefined && v !== null)
+        .map(([k, v]) => [k, String(v)])
     ).toString();
     return get<{ nodes: KBNode[]; count: number }>(
       `/kb/nodes${qs ? "?" + qs : ""}`
     );
   },
+  node: (id: string) =>
+    get<{ node: KBNode; provenance: Provenance[] }>(`/kb/node/${id}`),
 };

@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  height: 100%;
+  background: #FAFAF9;
+  color: #1A1A1A;
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: #EEF0FF;
+  color: #1A1A1A;
+}
+
+/* Subtle grid backdrop */
+.bg-grain {
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(20,20,20,0.04) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+/* Glass card */
+.glass {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: saturate(140%) blur(8px);
+  -webkit-backdrop-filter: saturate(140%) blur(8px);
+  border: 1px solid #E8E6E1;
+}
+
+/* Scrollbars */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #E0DDD7;
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #C9C5BD;
+}
+
+/* Markdown surface inside chat */
+.prose-chat p { margin: 0.25rem 0; }
+.prose-chat ul { margin: 0.25rem 0 0.25rem 1.1rem; list-style: disc; }
+.prose-chat ol { margin: 0.25rem 0 0.25rem 1.1rem; list-style: decimal; }
+.prose-chat code {
+  background: #F5F4F1;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 0.85em;
+}
+.prose-chat pre {
+  background: #F5F4F1;
+  padding: 10px 12px;
+  border-radius: 10px;
+  overflow-x: auto;
+  font-size: 0.82em;
+}
+.prose-chat table {
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 0.85em;
+}
+.prose-chat th, .prose-chat td {
+  border: 1px solid #E8E6E1;
+  padding: 4px 8px;
+  text-align: left;
+}
+.prose-chat th { background: #F5F4F1; font-weight: 600; }

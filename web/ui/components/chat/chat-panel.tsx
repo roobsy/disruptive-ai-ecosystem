@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { onChatMessage } from "@/lib/chat-bus";
 
 type ToolCall = {
   id: string;
@@ -47,6 +48,7 @@ export function ChatPanel() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const sendRef = useRef<(text: string) => void>(() => {});
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -54,6 +56,18 @@ export function ChatPanel() {
       behavior: "smooth",
     });
   }, [messages]);
+
+  // Subscribe to the global chat bus once. Other components (dashboard
+  // buttons, suggestion chips) emit messages here.
+  useEffect(() => {
+    return onChatMessage((text) => sendRef.current(text));
+  }, []);
+
+  // Keep the bus-callable send pointed at the latest closure (state changes
+  // each render, so closures capturing `messages` / `sending` go stale).
+  sendRef.current = (text: string) => {
+    void send(text);
+  };
 
   async function send(text: string) {
     if (!text.trim() || sending) return;

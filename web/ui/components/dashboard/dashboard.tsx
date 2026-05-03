@@ -15,6 +15,7 @@ import {
   Target,
   ArrowUpRight,
 } from "lucide-react";
+import { emitChatMessage } from "@/lib/chat-bus";
 
 export function Dashboard() {
   const [stats, setStats] = useState<KBStats | null>(null);
@@ -48,7 +49,12 @@ export function Dashboard() {
                 Venture: <span className="text-ink">{venture?.name || "—"}</span>
               </div>
             </div>
-            <button className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-ink text-bg-elevated px-3 py-2 text-sm font-medium shadow-soft hover:bg-ink/90">
+            <button
+              onClick={() =>
+                emitChatMessage("Run a Master Brain strategic review.")
+              }
+              className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-ink text-bg-elevated px-3 py-2 text-sm font-medium shadow-soft hover:bg-ink/90 active:scale-[0.98] transition-transform"
+            >
               Run strategic review
               <ArrowUpRight className="h-3.5 w-3.5" />
             </button>
@@ -118,7 +124,7 @@ export function Dashboard() {
       <Card glass>
         <CardHeader
           title="Try the chat"
-          subtitle="The chat panel can call backend tools directly."
+          subtitle="Click any prompt to send it to the chat panel."
         />
         <CardBody>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
@@ -127,12 +133,13 @@ export function Dashboard() {
               "Show me the highest-confidence axiomatic facts.",
               "Which domains are off-mission?",
             ].map((s) => (
-              <div
+              <button
                 key={s}
-                className="rounded-lg border border-ink-line bg-bg-elevated px-3 py-2.5 text-sm text-ink-muted"
+                onClick={() => emitChatMessage(s)}
+                className="text-left rounded-lg border border-ink-line bg-bg-elevated px-3 py-2.5 text-sm text-ink-muted hover:text-ink hover:border-accent-ring/50 hover:bg-accent-soft/40 active:scale-[0.99] transition-all"
               >
                 {s}
-              </div>
+              </button>
             ))}
           </div>
         </CardBody>
